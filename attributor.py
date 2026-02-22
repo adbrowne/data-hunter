@@ -45,6 +45,11 @@ def parse_args():
         default=None,
         help="End of the anomalous period, inclusive (e.g. 2026-01-31). Defaults to --anomaly-date.",
     )
+    parser.add_argument(
+        "--date-field",
+        default="session_date",
+        help="Name of the date/timestamp column (default: session_date)",
+    )
     parser.add_argument("--db", default="data.db", help="Path to DuckDB file")
     parser.add_argument(
         "--backend",
@@ -76,11 +81,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def _load_duckdb(db_path: str, table: str, metric: str, time_dim: str) -> tuple[pd.DataFrame, list[str]]:
+def _load_duckdb(db_path: str, table: str, metric: str, time_dim: str, date_field: str) -> tuple[pd.DataFrame, list[str]]:
     trunc_expr = {
-        "day": "session_date",
-        "week": "DATE_TRUNC('week', session_date)",
-        "month": "DATE_TRUNC('month', session_date)",
+        "day": date_field,
+        "week": f"DATE_TRUNC('week', {date_field})",
+        "month": f"DATE_TRUNC('month', {date_field})",
     }[time_dim]
 
     con = duckdb.connect(db_path, read_only=True)
@@ -119,10 +124,11 @@ def _load_databricks(args, metric: str, time_dim: str) -> tuple[pd.DataFrame, li
     from databricks.sdk import WorkspaceClient
     import databricks.sql
 
+    date_field = args.date_field
     trunc_expr = {
-        "day": "session_date",
-        "week": "DATE_TRUNC('week', session_date)",
-        "month": "DATE_TRUNC('month', session_date)",
+        "day": date_field,
+        "week": f"DATE_TRUNC('week', {date_field})",
+        "month": f"DATE_TRUNC('month', {date_field})",
     }[time_dim]
 
     # Fully-qualify table name if catalog/schema provided
@@ -202,7 +208,7 @@ def _load_databricks(args, metric: str, time_dim: str) -> tuple[pd.DataFrame, li
 
 def load_data(args, metric: str, time_dim: str) -> tuple[pd.DataFrame, list[str]]:
     if args.backend == "duckdb":
-        return _load_duckdb(args.db, args.table, metric, time_dim)
+        return _load_duckdb(args.db, args.table, metric, time_dim, args.date_field)
     else:
         return _load_databricks(args, metric, time_dim)
 
