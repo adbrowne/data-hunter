@@ -27,6 +27,7 @@ uv run attributor.py --metric <column> --time-dimension <day|week|month> --anoma
 | `--http-path` | no* | Databricks warehouse HTTP path |
 | `--catalog` | no | Databricks catalog (optional) |
 | `--schema` | no | Databricks schema (optional) |
+| `--date-field` | no | Name of the date/timestamp column (default: `session_date`) |
 | `--top-n` | no | Results to show per combination level (default: 3) |
 | `--combo-depth` | no | Max number of dimensions to combine (default: all) |
 
@@ -49,6 +50,12 @@ Pairs only:
 ```
 uv run attributor.py --metric widget_views --time-dimension day \
   --anomaly-date 2026-01-30 --combo-depth 2
+```
+
+Custom date column name:
+```
+uv run attributor.py --metric widget_views --time-dimension day \
+  --anomaly-date 2026-01-30 --date-field event_date
 ```
 
 Databricks SQL warehouse (browser OAuth triggered on first run):
@@ -76,4 +83,4 @@ Dimensions are auto-detected from the schema (non-metric, non-date columns).
 
 ### Data format
 
-Expects a table named `records` (or the value of `--table`) containing at least one numeric metric column, one date column (`session_date`), and any number of string dimension columns. Works with both DuckDB files and Databricks SQL warehouses.
+Expects a table named `records` (or the value of `--table`) containing at least one numeric metric column, one date column (default: `session_date`, configurable via `--date-field`), and any number of string dimension columns. Works with both DuckDB files and Databricks SQL warehouses.
