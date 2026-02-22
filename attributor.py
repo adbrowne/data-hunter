@@ -3,6 +3,8 @@
 #   "duckdb",
 #   "pandas",
 #   "rich",
+#   "databricks-sql-connector",
+#   "databricks-sdk",
 # ]
 # ///
 
@@ -17,6 +19,9 @@ from rich.table import Table
 from rich import box
 
 console = Console()
+
+NUMERIC_TYPES = {"INTEGER", "BIGINT", "DOUBLE", "FLOAT", "DECIMAL", "INT", "LONG", "REAL"}
+DATE_TYPES = {"DATE", "TIMESTAMP", "TIMESTAMP_NTZ"}
 
 
 def parse_args():
@@ -42,6 +47,21 @@ def parse_args():
     )
     parser.add_argument("--db", default="data.db", help="Path to DuckDB file")
     parser.add_argument(
+        "--backend",
+        default="duckdb",
+        choices=["duckdb", "databricks"],
+        help="Storage backend (default: duckdb)",
+    )
+    parser.add_argument(
+        "--table",
+        default="records",
+        help="Table name (default: records)",
+    )
+    parser.add_argument("--host", default=None, help="Databricks server hostname")
+    parser.add_argument("--http-path", default=None, help="Databricks warehouse HTTP path")
+    parser.add_argument("--catalog", default=None, help="Databricks catalog (optional)")
+    parser.add_argument("--schema", default=None, help="Databricks schema (optional)")
+    parser.add_argument(
         "--top-n",
         type=int,
         default=3,
@@ -56,7 +76,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_data(db_path: str, metric: str, time_dim: str) -> pd.DataFrame:
+def _load_duckdb(db_path: str, table: str, metric: str, time_dim: str) -> tuple[pd.DataFrame, list[str]]:
     trunc_expr = {
         "day": "session_date",
         "week": "DATE_TRUNC('week', session_date)",
@@ -66,7 +86,7 @@ def load_data(db_path: str, metric: str, time_dim: str) -> pd.DataFrame:
     con = duckdb.connect(db_path, read_only=True)
 
     # Validate metric column exists
-    cols = [r[0] for r in con.execute("DESCRIBE records").fetchall()]
+    cols = [r[0] for r in con.execute(f"DESCRIBE {table}").fetchall()]
     if metric not in cols:
         console.print(
             f"[bold red]Error:[/] metric column '[yellow]{metric}[/]' not found in table.\n"
@@ -74,23 +94,117 @@ def load_data(db_path: str, metric: str, time_dim: str) -> pd.DataFrame:
         )
         sys.exit(1)
 
-    # Auto-detect dimension columns (non-metric, non-date)
-    type_map = {r[0]: r[1] for r in con.execute("DESCRIBE records").fetchall()}
+    # Auto-detect dimension columns (non-metric, non-date, non-numeric)
+    type_map = {r[0]: r[1] for r in con.execute(f"DESCRIBE {table}").fetchall()}
     dimensions = [
         c
         for c, t in type_map.items()
-        if c != metric and t.upper() not in ("DATE", "TIMESTAMP", "INTEGER", "BIGINT", "DOUBLE", "FLOAT")
+        if c != metric
+        and t.upper() not in NUMERIC_TYPES
+        and t.upper() not in DATE_TYPES
     ]
 
     df = con.execute(
         f"SELECT {trunc_expr} AS period, {', '.join(dimensions)}, SUM({metric}) AS metric_value "
-        f"FROM records "
+        f"FROM {table} "
         f"GROUP BY {trunc_expr}, {', '.join(dimensions)}"
     ).df()
     con.close()
 
     df["period"] = pd.to_datetime(df["period"]).dt.date
     return df, dimensions
+
+
+def _load_databricks(args, metric: str, time_dim: str) -> tuple[pd.DataFrame, list[str]]:
+    from databricks.sdk import WorkspaceClient
+    import databricks.sql
+
+    trunc_expr = {
+        "day": "session_date",
+        "week": "DATE_TRUNC('week', session_date)",
+        "month": "DATE_TRUNC('month', session_date)",
+    }[time_dim]
+
+    # Fully-qualify table name if catalog/schema provided
+    if args.catalog and args.schema:
+        full_table = f"{args.catalog}.{args.schema}.{args.table}"
+        info_schema_filter = (
+            f"table_catalog = '{args.catalog}' AND table_schema = '{args.schema}' "
+            f"AND table_name = '{args.table}'"
+        )
+    elif args.schema:
+        full_table = f"{args.schema}.{args.table}"
+        info_schema_filter = (
+            f"table_schema = '{args.schema}' AND table_name = '{args.table}'"
+        )
+    else:
+        full_table = args.table
+        info_schema_filter = f"table_name = '{args.table}'"
+
+    # Authenticate via browser OAuth — SDK triggers browser flow on first run
+    w = WorkspaceClient(host=f"https://{args.host}")
+    # Access config to trigger auth; authenticate() returns headers dict
+    w.config.authenticate()
+
+    conn = databricks.sql.connect(
+        server_hostname=args.host,
+        http_path=args.http_path,
+        credentials_provider=lambda: w.config.authenticate,
+    )
+    cursor = conn.cursor()
+
+    # Schema introspection via information_schema
+    cursor.execute(
+        f"SELECT column_name, data_type FROM information_schema.columns "
+        f"WHERE {info_schema_filter}"
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        console.print(
+            f"[bold red]Error:[/] no columns found for table '[yellow]{full_table}[/]'.\n"
+            f"Check --catalog, --schema, and --table arguments."
+        )
+        conn.close()
+        sys.exit(1)
+
+    type_map = {r[0]: r[1] for r in rows}
+    cols = list(type_map.keys())
+
+    if metric not in cols:
+        console.print(
+            f"[bold red]Error:[/] metric column '[yellow]{metric}[/]' not found in table.\n"
+            f"Available columns: {', '.join(cols)}"
+        )
+        conn.close()
+        sys.exit(1)
+
+    dimensions = [
+        c
+        for c, t in type_map.items()
+        if c != metric
+        and t.upper() not in NUMERIC_TYPES
+        and t.upper() not in DATE_TYPES
+    ]
+
+    cursor.execute(
+        f"SELECT {trunc_expr} AS period, {', '.join(dimensions)}, SUM({metric}) AS metric_value "
+        f"FROM {full_table} "
+        f"GROUP BY {trunc_expr}, {', '.join(dimensions)}"
+    )
+    desc = cursor.description
+    col_names = [d[0] for d in desc]
+    df = pd.DataFrame(cursor.fetchall(), columns=col_names)
+    conn.close()
+
+    df["period"] = pd.to_datetime(df["period"]).dt.date
+    return df, dimensions
+
+
+def load_data(args, metric: str, time_dim: str) -> tuple[pd.DataFrame, list[str]]:
+    if args.backend == "duckdb":
+        return _load_duckdb(args.db, args.table, metric, time_dim)
+    else:
+        return _load_databricks(args, metric, time_dim)
 
 
 def contribution_to_change(
@@ -258,7 +372,20 @@ def print_combo_table(combos_by_depth: dict[int, list[tuple]], top_n: int):
 def main():
     args = parse_args()
 
-    df, dimensions = load_data(args.db, args.metric, args.time_dimension)
+    # Validate backend-specific required args
+    if args.backend == "databricks":
+        missing = []
+        if not args.host:
+            missing.append("--host")
+        if not args.http_path:
+            missing.append("--http-path")
+        if missing:
+            console.print(
+                f"[bold red]Error:[/] {' and '.join(missing)} required for databricks backend"
+            )
+            sys.exit(1)
+
+    df, dimensions = load_data(args, args.metric, args.time_dimension)
 
     # Build the set of anomaly periods
     anomaly_start = pd.to_datetime(args.anomaly_date).date()

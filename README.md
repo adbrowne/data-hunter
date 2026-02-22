@@ -20,13 +20,21 @@ uv run attributor.py --metric <column> --time-dimension <day|week|month> --anoma
 | `--time-dimension` | yes | Aggregation granularity: `day`, `week`, or `month` |
 | `--anomaly-date` | yes | Start of the anomalous period |
 | `--anomaly-end` | no | End of anomalous period, inclusive. Defaults to `--anomaly-date` |
+| `--backend` | no | Storage backend: `duckdb` or `databricks` (default: `duckdb`) |
+| `--table` | no | Table name (default: `records`) |
 | `--db` | no | Path to DuckDB file (default: `data.db`) |
+| `--host` | no* | Databricks server hostname |
+| `--http-path` | no* | Databricks warehouse HTTP path |
+| `--catalog` | no | Databricks catalog (optional) |
+| `--schema` | no | Databricks schema (optional) |
 | `--top-n` | no | Results to show per combination level (default: 3) |
 | `--combo-depth` | no | Max number of dimensions to combine (default: all) |
 
+\* Required when `--backend databricks`
+
 ### Examples
 
-Single day:
+Single day (DuckDB):
 ```
 uv run attributor.py --metric widget_views --time-dimension day --anomaly-date 2026-01-30
 ```
@@ -41,6 +49,15 @@ Pairs only:
 ```
 uv run attributor.py --metric widget_views --time-dimension day \
   --anomaly-date 2026-01-30 --combo-depth 2
+```
+
+Databricks SQL warehouse (browser OAuth triggered on first run):
+```
+uv run attributor.py --backend databricks \
+  --metric widget_views --time-dimension day --anomaly-date 2026-01-30 \
+  --host <workspace>.azuredatabricks.net \
+  --http-path /sql/1.0/warehouses/<id> \
+  --catalog my_catalog --schema my_schema --table records
 ```
 
 ### How it works
@@ -59,4 +76,4 @@ Dimensions are auto-detected from the schema (non-metric, non-date columns).
 
 ### Data format
 
-Expects a DuckDB database with a `records` table containing at least one numeric metric column, one date column (`session_date`), and any number of string dimension columns.
+Expects a table named `records` (or the value of `--table`) containing at least one numeric metric column, one date column (`session_date`), and any number of string dimension columns. Works with both DuckDB files and Databricks SQL warehouses.
