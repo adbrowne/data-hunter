@@ -1,0 +1,45 @@
+seed: 42
+
+datasets:
+  - name: report
+    output: baseline
+    num_rows: 1000
+    partition:
+      column: session_date
+      start: "2026-01-01"
+      days: 31
+    entity:
+      pool_ratio: 0.2
+      columns:
+        - name: country
+          generator:
+            type: weighted_choice
+            values:
+              DE: 0.190   # Germany
+              FR: 0.150   # France
+              IT: 0.140   # Italy
+              ES: 0.110   # Spain
+              PL: 0.090   # Poland
+    columns:
+      - name: platform
+        generator:
+          type: weighted_choice
+          values:
+            web_desktop: 0.40
+            android: 0.25
+            ios: 0.20
+            web_mobile: 0.15
+      - name: visit_source
+        generator:
+          type: weighted_choice
+          values:
+            seo: 0.30
+            direct: 0.25
+            sem: 0.15
+            referral: 0.10
+            affiliate: 0.08
+            email: 0.07
+            social: 0.03
+            organic_social: 0.02
+      - name: widget_views
+        generator: { type: log_normal, median: 5.0, sigma: 1.0, max: 100 }
